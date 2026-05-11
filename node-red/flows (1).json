@@ -1,0 +1,694 @@
+[
+    {
+        "id": "8a34ae09c3dd8a98",
+        "type": "tab",
+        "label": "Flux 1",
+        "disabled": false,
+        "info": "",
+        "env": []
+    },
+    {
+        "id": "9ba7543476865298",
+        "type": "mqtt in",
+        "z": "8a34ae09c3dd8a98",
+        "name": "",
+        "topic": "avion/moteur1/data",
+        "qos": "2",
+        "datatype": "auto-detect",
+        "broker": "6d7ebbac485f1e58",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 110,
+        "y": 80,
+        "wires": [
+            [
+                "a96433a242627168"
+            ]
+        ]
+    },
+    {
+        "id": "0f104d8244ab2f05",
+        "type": "function",
+        "z": "8a34ae09c3dd8a98",
+        "name": "curve",
+        "func": "// 1. Vérification : On s'assure que le payload est bien un objet JSON\nif (typeof msg.payload !== 'object') {\n    return null; \n}\n\n// 2. Identification du moteur à partir du Topic MQTT\n// Si le topic contient \"moteur1\", on utilise le préfixe \"ENG 1\", sinon \"ENG 2\"\nlet enginePrefix = msg.topic.includes(\"moteur1\") ? \"ENG 1\" : \"ENG 2\";\n\n// 3. Préparation et envoi des messages pour le graphique (6 courbes possibles)\n\n// Envoi de la Température\nnode.send({\n    topic: enginePrefix + \" Température\",\n    payload: msg.payload.temp\n});\n\n// Envoi de la Pression\nnode.send({\n    topic: enginePrefix + \" Pression\",\n    payload: msg.payload.press\n});\n\n// Envoi des Vibrations\nnode.send({\n    topic: enginePrefix + \" Vibration\",\n    payload: msg.payload.vib\n});\n\n// On retourne null car les messages sont déjà envoyés via node.send()\nreturn null;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 530,
+        "y": 360,
+        "wires": [
+            [
+                "e9236bf9c87fbf6a",
+                "66486aac2da1a985"
+            ]
+        ]
+    },
+    {
+        "id": "646f1bf225b5dc22",
+        "type": "mqtt in",
+        "z": "8a34ae09c3dd8a98",
+        "name": "",
+        "topic": "avion/moteur2/data",
+        "qos": "2",
+        "datatype": "auto-detect",
+        "broker": "6d7ebbac485f1e58",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 110,
+        "y": 460,
+        "wires": [
+            [
+                "fe9c9b70b5b9f8b2"
+            ]
+        ]
+    },
+    {
+        "id": "9160073d64216301",
+        "type": "function",
+        "z": "8a34ae09c3dd8a98",
+        "name": "alerte",
+        "func": "// Initialisation des variables\nlet timer = context.get('timer') || 60;\nlet active = context.get('active') || false;\nlet lastData = context.get('lastData') || { temp: 0, press: 0, vib: 0 };\nlet typeMsg = context.get('typeMsg') || \"\";\nlet moteurSource = context.get('moteurSource') || \"\";\n\n// Gestion du RESET\nif (msg.topic === \"reset\") {\n    timer = 60; active = false; typeMsg = \"\";\n    context.set('timer', timer); context.set('active', active);\n    return [{ payload: { reset: true } }, { payload: 0 }, null];\n}\n\nif (msg.topic === \"tick\") {\n    if (active && timer > 0) timer--;\n} else {\n    let currentMoteur = msg.topic.includes(\"moteur1\") ? \"ENG 1\" : \"ENG 2\";\n    lastData = msg.payload;\n    let danger = false;\n    let currentType = \"\";\n\n    // Diagnostic des problèmes (Surchauffe, Basse Pression, Vibrations)\n    if (lastData.temp > 850) { currentType = \"SURCHAUFFE\"; danger = true; }\n    else if (lastData.press < 30) { currentType = \"BASSE PRESSION\"; danger = true; }\n    else if (lastData.vib > 40) { currentType = \"VIBRATIONS\"; danger = true; }\n\n    if (danger) { active = true; moteurSource = currentMoteur; typeMsg = currentType; }\n    else if (moteurSource === currentMoteur) { active = false; timer = 60; typeMsg = \"\"; }\n    context.set('lastData', lastData);\n}\n\n// --- LOGIQUE DE CONSOMMATION RÉALISTE (FUEL FLOW) ---\nlet fuelFixed = 0;\nif (lastData.temp > 100) { \n    // 1. La température (EGT) augmente la consommation de base\n    let baseConsumption = lastData.temp * 0.08; \n    \n    // 2. Les vibrations augmentent la résistance et donc la consommation\n    let vibrationImpact = lastData.vib * 0.5; \n    \n    // 3. Basse pression = Perte d'efficacité = Augmentation de la consommation pour compenser\n    let pressureFactor = 1.0;\n    if (lastData.press < 40) {\n        pressureFactor = 1.25; // Augmentation de 25% si la pression est basse\n    }\n\n    // Calcul final réaliste\n    let totalFlow = (baseConsumption + vibrationImpact) * pressureFactor + (Math.random() * 2);\n    fuelFixed = parseFloat(totalFlow.toFixed(1));\n}\n\ncontext.set('timer', timer); \ncontext.set('active', active);\ncontext.set('typeMsg', typeMsg); \ncontext.set('moteurSource', moteurSource);\n\n// --- SORTIES (OUTPUTS) ---\n// 1: Interface Template (Avion)\nlet msgTemplate = { \n    payload: { \n        ...lastData, \n        timer: timer, \n        isCritical: active, \n        msgLabel: typeMsg, \n        moteur: moteurSource || (msg.topic.includes(\"moteur1\") ? \"ENG 1\" : \"ENG 2\") \n    } \n};\n\n// 2: Jauge Fuel Flow\nlet msgGauge = { payload: fuelFixed };\n\n// 3: Notification d'alerte\nlet msgNotify = (active && timer % 20 === 0) ? { payload: \"⚠️ ATTENTION: \" + moteurSource + \" \" + typeMsg } : null;\n\nreturn [msgTemplate, msgGauge, msgNotify];",
+        "outputs": 3,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 530,
+        "y": 220,
+        "wires": [
+            [
+                "edd4d1d9b383e88c"
+            ],
+            [
+                "19c0955b8ada067f"
+            ],
+            [
+                "7566c2728171aaeb"
+            ]
+        ]
+    },
+    {
+        "id": "fe9c9b70b5b9f8b2",
+        "type": "json",
+        "z": "8a34ae09c3dd8a98",
+        "name": "",
+        "property": "payload",
+        "action": "obj",
+        "pretty": false,
+        "x": 290,
+        "y": 460,
+        "wires": [
+            [
+                "9160073d64216301",
+                "0f104d8244ab2f05",
+                "86d1e648e3c2a3c9"
+            ]
+        ]
+    },
+    {
+        "id": "a96433a242627168",
+        "type": "json",
+        "z": "8a34ae09c3dd8a98",
+        "name": "",
+        "property": "payload",
+        "action": "obj",
+        "pretty": false,
+        "x": 290,
+        "y": 80,
+        "wires": [
+            [
+                "0f104d8244ab2f05",
+                "a0b7de1708b5d7bd",
+                "9160073d64216301"
+            ]
+        ]
+    },
+    {
+        "id": "a0b7de1708b5d7bd",
+        "type": "function",
+        "z": "8a34ae09c3dd8a98",
+        "name": "function 1",
+        "func": "var d1 = msg.payload;\nreturn [\n    { payload: d1.temp },  // Jauge Température 1\n    { payload: d1.press }, // Jauge Pression 1 (DHT22)\n    { payload: d1.vib }    // Jauge Vibration 1\n];",
+        "outputs": 3,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 540,
+        "y": 80,
+        "wires": [
+            [
+                "fac4ba924a176b45"
+            ],
+            [
+                "be444f216f8ae7b0"
+            ],
+            [
+                "069c69673deea7f5"
+            ]
+        ]
+    },
+    {
+        "id": "86d1e648e3c2a3c9",
+        "type": "function",
+        "z": "8a34ae09c3dd8a98",
+        "name": "function 2",
+        "func": "var d2 = msg.payload;\nreturn [\n    { payload: d2.temp },  // Jauge Température 2\n    { payload: d2.press }, // Jauge Pression 2 (DHT22)\n    { payload: d2.vib }    // Jauge Vibration 2\n];",
+        "outputs": 3,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 540,
+        "y": 460,
+        "wires": [
+            [
+                "b9d76fb64a53c2f1"
+            ],
+            [
+                "6cd49aca94fdc981"
+            ],
+            [
+                "f6e546d9420ba91d"
+            ]
+        ]
+    },
+    {
+        "id": "7566c2728171aaeb",
+        "type": "function",
+        "z": "8a34ae09c3dd8a98",
+        "name": "function 3",
+        "func": "if (msg.announcement) {\n    msg.payload = msg.announcement;\n    return msg;\n}\nreturn null; // لا ترسل شيئاً إذا لم يكن هناك خطر",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 740,
+        "y": 260,
+        "wires": [
+            [
+                "c0e66f0a8e5db88c"
+            ]
+        ]
+    },
+    {
+        "id": "56e2ba0e19f98dc5",
+        "type": "inject",
+        "z": "8a34ae09c3dd8a98",
+        "name": "",
+        "props": [
+            {
+                "p": "payload"
+            },
+            {
+                "p": "topic",
+                "vt": "str"
+            }
+        ],
+        "repeat": "1",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "tick",
+        "payload": "",
+        "payloadType": "date",
+        "x": 270,
+        "y": 240,
+        "wires": [
+            [
+                "9160073d64216301"
+            ]
+        ]
+    },
+    {
+        "id": "c0e66f0a8e5db88c",
+        "type": "delay",
+        "z": "8a34ae09c3dd8a98",
+        "name": "",
+        "pauseType": "rate",
+        "timeout": "5",
+        "timeoutUnits": "seconds",
+        "rate": "1",
+        "nbRateUnits": "10",
+        "rateUnits": "second",
+        "randomFirst": "1",
+        "randomLast": "5",
+        "randomUnits": "seconds",
+        "drop": false,
+        "allowrate": false,
+        "outputs": 1,
+        "x": 920,
+        "y": 260,
+        "wires": [
+            [
+                "f4eff37bd90484ac"
+            ]
+        ]
+    },
+    {
+        "id": "8f81c1e6b5e65ee7",
+        "type": "inject",
+        "z": "8a34ae09c3dd8a98",
+        "name": "RÉINITIALISER",
+        "props": [
+            {
+                "p": "payload"
+            },
+            {
+                "p": "topic",
+                "vt": "str"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "reset",
+        "payload": "",
+        "payloadType": "date",
+        "x": 280,
+        "y": 200,
+        "wires": [
+            [
+                "9160073d64216301"
+            ]
+        ]
+    },
+    {
+        "id": "fac4ba924a176b45",
+        "type": "ui_gauge",
+        "z": "8a34ae09c3dd8a98",
+        "name": "",
+        "group": "e3bdfe1dbc64f07e",
+        "order": 1,
+        "width": "4",
+        "height": "4",
+        "gtype": "gage",
+        "title": "Température EGT 1",
+        "label": "°C",
+        "format": "{{msg.payload.temp}}",
+        "min": "200",
+        "max": "1000",
+        "colors": [
+            "#00b500",
+            "#e6e600",
+            "#ca3838"
+        ],
+        "seg1": "750",
+        "seg2": "850",
+        "diff": false,
+        "className": "",
+        "x": 850,
+        "y": 40,
+        "wires": []
+    },
+    {
+        "id": "be444f216f8ae7b0",
+        "type": "ui_gauge",
+        "z": "8a34ae09c3dd8a98",
+        "name": "",
+        "group": "e3bdfe1dbc64f07e",
+        "order": 2,
+        "width": "4",
+        "height": "4",
+        "gtype": "gage",
+        "title": "Oil Pressure 1",
+        "label": "PSI",
+        "format": "{{msg.payload.press}}",
+        "min": 0,
+        "max": "100",
+        "colors": [
+            "#ca3838",
+            "#00b500",
+            "#e6e600"
+        ],
+        "seg1": "30",
+        "seg2": "70",
+        "diff": false,
+        "className": "",
+        "x": 840,
+        "y": 80,
+        "wires": []
+    },
+    {
+        "id": "069c69673deea7f5",
+        "type": "ui_gauge",
+        "z": "8a34ae09c3dd8a98",
+        "name": "",
+        "group": "e3bdfe1dbc64f07e",
+        "order": 3,
+        "width": "4",
+        "height": "4",
+        "gtype": "gage",
+        "title": "Engine Vibration 1",
+        "label": "mm/s",
+        "format": "{{msg.payload.vib}}",
+        "min": 0,
+        "max": "50",
+        "colors": [
+            "#00b500",
+            "#e6e600",
+            "#ca3838"
+        ],
+        "seg1": "20",
+        "seg2": "40",
+        "diff": false,
+        "className": "",
+        "x": 850,
+        "y": 120,
+        "wires": []
+    },
+    {
+        "id": "b9d76fb64a53c2f1",
+        "type": "ui_gauge",
+        "z": "8a34ae09c3dd8a98",
+        "name": "",
+        "group": "64212053cf675a35",
+        "order": 1,
+        "width": "4",
+        "height": "4",
+        "gtype": "gage",
+        "title": "Température EGT 2",
+        "label": "°C",
+        "format": "{{msg.payload.temp}}",
+        "min": "200",
+        "max": "1000",
+        "colors": [
+            "#00b500",
+            "#e6e600",
+            "#ca3838"
+        ],
+        "seg1": "750",
+        "seg2": "850",
+        "diff": false,
+        "className": "",
+        "x": 850,
+        "y": 420,
+        "wires": []
+    },
+    {
+        "id": "6cd49aca94fdc981",
+        "type": "ui_gauge",
+        "z": "8a34ae09c3dd8a98",
+        "name": "",
+        "group": "64212053cf675a35",
+        "order": 2,
+        "width": "4",
+        "height": "4",
+        "gtype": "gage",
+        "title": "Oil Pressure 2",
+        "label": "PSI",
+        "format": "{{msg.payload.press}}",
+        "min": 0,
+        "max": "100",
+        "colors": [
+            "#ca3838",
+            "#00b500",
+            "#e6e600"
+        ],
+        "seg1": "30",
+        "seg2": "70",
+        "diff": false,
+        "className": "",
+        "x": 840,
+        "y": 460,
+        "wires": []
+    },
+    {
+        "id": "f6e546d9420ba91d",
+        "type": "ui_gauge",
+        "z": "8a34ae09c3dd8a98",
+        "name": "",
+        "group": "64212053cf675a35",
+        "order": 3,
+        "width": "4",
+        "height": "4",
+        "gtype": "gage",
+        "title": "Engine Vibration 2",
+        "label": "mm/s",
+        "format": "{{msg.payload.vib}}",
+        "min": 0,
+        "max": "50",
+        "colors": [
+            "#00b500",
+            "#e6e600",
+            "#ca3838"
+        ],
+        "seg1": "20",
+        "seg2": "40",
+        "diff": false,
+        "className": "",
+        "x": 850,
+        "y": 500,
+        "wires": []
+    },
+    {
+        "id": "19c0955b8ada067f",
+        "type": "ui_gauge",
+        "z": "8a34ae09c3dd8a98",
+        "name": "",
+        "group": "6ca54ea811e100e2",
+        "order": 3,
+        "width": "4",
+        "height": "5",
+        "gtype": "wave",
+        "title": "FUEL FLOW",
+        "label": "L/min",
+        "format": "{{value}}",
+        "min": 0,
+        "max": "100",
+        "colors": [
+            "#00b500",
+            "#e6e600",
+            "#ca3838"
+        ],
+        "seg1": "",
+        "seg2": "",
+        "diff": false,
+        "className": "",
+        "x": 750,
+        "y": 220,
+        "wires": []
+    },
+    {
+        "id": "e9236bf9c87fbf6a",
+        "type": "ui_chart",
+        "z": "8a34ae09c3dd8a98",
+        "name": "",
+        "group": "6ca54ea811e100e2",
+        "order": 5,
+        "width": "5",
+        "height": "4",
+        "label": "Oil Pressure & Vibrations",
+        "chartType": "line",
+        "legend": "true",
+        "xformat": "HH:mm:ss",
+        "interpolate": "linear",
+        "nodata": "",
+        "dot": false,
+        "ymin": "0",
+        "ymax": "100",
+        "removeOlder": "1",
+        "removeOlderPoints": "",
+        "removeOlderUnit": "60",
+        "cutout": 0,
+        "useOneColor": false,
+        "useUTC": false,
+        "colors": [
+            "#18a805",
+            "#281fa8",
+            "#ff7f0e",
+            "#e6e600",
+            "#0cdfdb",
+            "#e6e600",
+            "#ff9896",
+            "#9467bd",
+            "#c5b0d5"
+        ],
+        "outputs": 1,
+        "useDifferentColor": false,
+        "className": "",
+        "x": 790,
+        "y": 320,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "66486aac2da1a985",
+        "type": "ui_chart",
+        "z": "8a34ae09c3dd8a98",
+        "name": "",
+        "group": "6ca54ea811e100e2",
+        "order": 6,
+        "width": "5",
+        "height": "4",
+        "label": "Engine Temperatures curve",
+        "chartType": "line",
+        "legend": "true",
+        "xformat": "HH:mm:ss",
+        "interpolate": "linear",
+        "nodata": "",
+        "dot": false,
+        "ymin": "200",
+        "ymax": "1000",
+        "removeOlder": "5",
+        "removeOlderPoints": "",
+        "removeOlderUnit": "60",
+        "cutout": 0,
+        "useOneColor": false,
+        "useUTC": false,
+        "colors": [
+            "#d62728",
+            "#ff7f0e",
+            "#ff7f0e",
+            "#2ca02c",
+            "#98df8a",
+            "#d62728",
+            "#ff9896",
+            "#9467bd",
+            "#c5b0d5"
+        ],
+        "outputs": 1,
+        "useDifferentColor": false,
+        "className": "",
+        "x": 800,
+        "y": 360,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "f4eff37bd90484ac",
+        "type": "ui_toast",
+        "z": "8a34ae09c3dd8a98",
+        "position": "top right",
+        "displayTime": "6",
+        "highlight": "",
+        "sendall": false,
+        "outputs": 0,
+        "ok": "OK",
+        "cancel": "",
+        "raw": false,
+        "className": "",
+        "topic": "",
+        "name": "Alerte Cockpit",
+        "x": 1120,
+        "y": 260,
+        "wires": []
+    },
+    {
+        "id": "edd4d1d9b383e88c",
+        "type": "ui_template",
+        "z": "8a34ae09c3dd8a98",
+        "group": "6ca54ea811e100e2",
+        "name": "",
+        "order": 1,
+        "width": "5",
+        "height": "7",
+        "format": "<div\n    style=\"background: #0b0b0b; padding: 15px; border-radius: 15px; text-align: center; color: white; border: 1px solid #333;\">\n    <h5 style=\"margin:0 0 10px 0; color: #888; letter-spacing: 1px;\">SYSTEM MONITOR EICAS</h5>\n\n    <svg width=\"200\" height=\"180\" viewBox=\"0 0 120 120\">\n        <path d=\"M60 10 Q66 10 66 30 L66 95 Q66 105 60 105 Q54 105 54 95 L54 30 Q54 10 60 10 Z\" fill=\"#cfd8dc\" />\n        <path d=\"M54 45 L5 75 L5 82 L54 65 Z\" fill=\"#90a4ae\" />\n        <path d=\"M66 45 L115 75 L115 82 L66 65 Z\" fill=\"#90a4ae\" />\n        <path d=\"M54 92 L35 102 L35 105 L54 100 Z\" fill=\"#90a4ae\" />\n        <path d=\"M66 92 L85 102 L85 105 L66 100 Z\" fill=\"#90a4ae\" />\n        <rect id=\"engine1\" x=\"22\" y=\"62\" width=\"16\" height=\"22\" rx=\"8\" fill=\"#2ecc71\" stroke=\"#1a1a1a\" />\n        <rect id=\"engine2\" x=\"82\" y=\"62\" width=\"16\" height=\"22\" rx=\"8\" fill=\"#2ecc71\" stroke=\"#1a1a1a\" />\n    </svg>\n\n    <div\n        style=\"background: rgba(0,0,0,0.6); padding: 10px; border-radius: 8px; font-size: 11px; border: 1px solid #222; margin-top: 10px;\">\n        <div id=\"d1\" style=\"color: #2ecc71; text-align: left; margin-bottom: 6px;\">\n            <b style=\"color:#eee\">ENG 1</b> <span style=\"float:right\"><span id=\"t1\">--</span>°C |\n            <span id=\"p1\">--</span> PSI | <span id=\"v1\">--</span> mm/s</span>\n        </div>\n        <div id=\"d2\" style=\"color: #2ecc71; text-align: left; border-top: 1px solid #222; padding-top: 6px;\">\n            <b style=\"color:#eee\">ENG 2</b> <span style=\"float:right\"><span id=\"t2\">--</span>°C |\n            <span id=\"p2\">--</span> PSI | <span id=\"v2\">--</span> mm/s</span>\n        </div>\n    </div>\n\n    <div id=\"banner\"\n        style=\"display:none; margin-top: 10px; padding: 12px; background: #d32f2f; font-weight: bold; border-radius: 6px; border: 2px solid white; animation: slideIn 0.3s;\">\n        ⚠️ <span id=\"alert-txt\">--</span> : <span id=\"timer-txt\">60</span>s\n    </div>\n</div>\n\n<style>\n    .blink-red {\n        animation: danger-pulse 0.6s infinite;\n    }\n\n    @keyframes danger-pulse {\n        0% {\n            fill: #f44336;\n        }\n\n        50% {\n            fill: #212121;\n        }\n\n        100% {\n            fill: #f44336;\n        }\n    }\n\n    @keyframes slideIn {\n        from {\n            transform: translateY(10px);\n            opacity: 0;\n        }\n\n        to {\n            transform: translateY(0);\n            opacity: 1;\n        }\n    }\n</style>\n\n<script>\n    (function(scope) {\n    scope.$watch('msg', function(msg) {\n        if (!msg || !msg.payload) return;\n        let d = msg.payload;\n        let b = document.getElementById(\"banner\");\n        let e1 = document.getElementById(\"engine1\");\n        let e2 = document.getElementById(\"engine2\");\n\n        if (d.reset) {\n            b.style.display=\"none\"; e1.className.baseVal=\"\"; e2.className.baseVal=\"\";\n            e1.setAttribute(\"fill\",\"#2ecc71\"); e2.setAttribute(\"fill\",\"#2ecc71\");\n            return;\n        }\n\n        if (d.isCritical) {\n            b.style.display=\"block\"; document.getElementById(\"timer-txt\").innerText = d.timer;\n            document.getElementById(\"alert-txt\").innerText = d.moteur + \" \" + d.msgLabel;\n            if (d.moteur === \"ENG 1\") { e1.className.baseVal=\"blink-red\"; e2.className.baseVal=\"\"; e2.setAttribute(\"fill\",\"#2ecc71\"); }\n            else { e2.className.baseVal=\"blink-red\"; e1.className.baseVal=\"\"; e1.setAttribute(\"fill\",\"#2ecc71\"); }\n        } else {\n            b.style.display=\"none\"; e1.className.baseVal=\"\"; e2.className.baseVal=\"\";\n            e1.setAttribute(\"fill\",\"#2ecc71\"); e2.setAttribute(\"fill\",\"#2ecc71\");\n        }\n\n        let s = d.moteur.includes(\"1\") ? \"1\" : \"2\";\n        if(d.temp) document.getElementById(\"t\"+s).innerText = Math.round(d.temp);\n        if(d.press) document.getElementById(\"p\"+s).innerText = Math.round(d.press);\n        if(d.vib) document.getElementById(\"v\"+s).innerText = Number(d.vib).toFixed(1);\n    });\n})(scope);\n</script>",
+        "storeOutMessages": true,
+        "fwdInMessages": true,
+        "resendOnRefresh": true,
+        "templateScope": "local",
+        "className": "",
+        "x": 740,
+        "y": 180,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "6d7ebbac485f1e58",
+        "type": "mqtt-broker",
+        "name": "",
+        "broker": "broker.hivemq.com:1883",
+        "port": 1883,
+        "clientid": "",
+        "autoConnect": true,
+        "usetls": false,
+        "protocolVersion": 4,
+        "keepalive": 60,
+        "cleansession": true,
+        "autoUnsubscribe": true,
+        "birthTopic": "",
+        "birthQos": "0",
+        "birthRetain": "false",
+        "birthPayload": "",
+        "birthMsg": {},
+        "closeTopic": "",
+        "closeQos": "0",
+        "closeRetain": "false",
+        "closePayload": "",
+        "closeMsg": {},
+        "willTopic": "",
+        "willQos": "0",
+        "willRetain": "false",
+        "willPayload": "",
+        "willMsg": {},
+        "userProps": "",
+        "sessionExpiry": ""
+    },
+    {
+        "id": "e3bdfe1dbc64f07e",
+        "type": "ui_group",
+        "name": "Engine 1",
+        "tab": "a0f3d80e4024a726",
+        "order": 2,
+        "disp": true,
+        "width": "8",
+        "collapse": false,
+        "className": ""
+    },
+    {
+        "id": "64212053cf675a35",
+        "type": "ui_group",
+        "name": "Engine 2",
+        "tab": "a0f3d80e4024a726",
+        "order": 3,
+        "disp": true,
+        "width": "8",
+        "collapse": false,
+        "className": ""
+    },
+    {
+        "id": "6ca54ea811e100e2",
+        "type": "ui_group",
+        "name": "Centre de Contrôle",
+        "tab": "a0f3d80e4024a726",
+        "order": 1,
+        "disp": true,
+        "width": "10",
+        "collapse": false,
+        "className": ""
+    },
+    {
+        "id": "a0f3d80e4024a726",
+        "type": "ui_tab",
+        "name": "Moniteur Avion",
+        "icon": "dashboard",
+        "disabled": false,
+        "hidden": false
+    },
+    {
+        "id": "dbf84f43cab8d0ef",
+        "type": "global-config",
+        "env": [],
+        "modules": {
+            "node-red-dashboard": "3.6.6"
+        }
+    }
+]

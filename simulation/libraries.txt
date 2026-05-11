@@ -1,0 +1,8 @@
+# Wokwi Library List
+# See https://docs.wokwi.com/guides/libraries
+
+TBPubSubClient
+ArduinoJson
+DHT sensor library
+Adafruit MPU6050
+BME280
